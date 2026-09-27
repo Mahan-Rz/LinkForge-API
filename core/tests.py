@@ -2,15 +2,17 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from redis.exceptions import RedisError
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient, APITestCase
 
 from . import services
 from .models import ShortenedURL
-from .serializers import ShortenedURLSerializer
+from .serializers import MAX_CODE_GENERATION_ATTEMPTS, ShortenedURLSerializer
 
 
 @override_settings(
@@ -42,7 +44,7 @@ class ShortenedURLAPITests(APITestCase):
             {
                 'original_url': 'https://example.com/path',
                 'owner': self.other_user.pk,
-                'shortened_code': 'manual123',
+                'shortened_code': 'manual12',
             },
             format='json',
         )
@@ -50,9 +52,21 @@ class ShortenedURLAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['original_url'], 'https://example.com/path')
         self.assertEqual(len(response.data['shortened_code']), 8)
+        self.assertNotEqual(response.data['shortened_code'], 'manual12')
         self.assertEqual(response.data['owner'], self.user.pk)
         self.assertIn('created_at', response.data)
         self.assertEqual(ShortenedURL.objects.get().owner, self.user)
+
+    def test_create_rejects_invalid_original_url(self):
+        response = self.client.post(
+            self.list_url,
+            {'original_url': 'not a URL'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('original_url', response.data)
+        self.assertEqual(ShortenedURL.objects.count(), 0)
 
     def test_url_crud_requires_authentication(self):
         response = APIClient().get(self.list_url)
@@ -323,6 +337,91 @@ class ShortenedURLSerializerTests(TestCase):
         another_shortened_url = another_serializer.save(owner=user)
 
         self.assertNotEqual(shortened_url.shortened_code, another_shortened_url.shortened_code)
+
+    def test_code_generator_retries_when_code_already_exists(self):
+        user = get_user_model().objects.create_user(
+            username='collision-owner',
+            password='test-password',
+        )
+        ShortenedURL.objects.create(
+            original_url='https://example.com/existing',
+            shortened_code='collide1',
+            owner=user,
+        )
+        serializer = ShortenedURLSerializer(
+            data={'original_url': 'https://example.com/new'}
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        with patch(
+            'core.serializers.generate_shortened_code',
+            side_effect=['collide1', 'unique01'],
+        ) as generate_code:
+            shortened_url = serializer.save(owner=user)
+
+        self.assertEqual(shortened_url.shortened_code, 'unique01')
+        self.assertEqual(generate_code.call_count, 2)
+
+    def test_code_generator_retries_a_database_unique_collision(self):
+        user = get_user_model().objects.create_user(
+            username='race-owner',
+            password='test-password',
+        )
+        serializer = ShortenedURLSerializer(
+            data={'original_url': 'https://example.com/new'}
+        )
+        actual_create = ShortenedURL.objects.create
+        create_attempts = 0
+
+        def create_with_race(**kwargs):
+            nonlocal create_attempts
+            create_attempts += 1
+            if create_attempts == 1:
+                raise IntegrityError('unique constraint')
+            return actual_create(**kwargs)
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        with (
+            patch(
+                'core.serializers.generate_shortened_code',
+                side_effect=['race0001', 'unique01'],
+            ),
+            patch('core.serializers.ShortenedURL.objects.filter') as filter_query,
+            patch(
+                'core.serializers.ShortenedURL.objects.create',
+                side_effect=create_with_race,
+            ),
+        ):
+            filter_query.return_value.exists.side_effect = [False, True, False]
+            shortened_url = serializer.save(owner=user)
+
+        self.assertEqual(shortened_url.shortened_code, 'unique01')
+        self.assertEqual(create_attempts, 2)
+
+    def test_code_generator_fails_cleanly_after_repeated_collisions(self):
+        user = get_user_model().objects.create_user(
+            username='retries-owner',
+            password='test-password',
+        )
+        ShortenedURL.objects.create(
+            original_url='https://example.com/existing',
+            shortened_code='collide1',
+            owner=user,
+        )
+        serializer = ShortenedURLSerializer(
+            data={'original_url': 'https://example.com/new'}
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        with patch(
+            'core.serializers.generate_shortened_code',
+            return_value='collide1',
+        ) as generate_code:
+            with self.assertRaises(ValidationError):
+                serializer.save(owner=user)
+
+        self.assertEqual(generate_code.call_count, MAX_CODE_GENERATION_ATTEMPTS)
+        self.assertEqual(ShortenedURL.objects.count(), 1)
 
     def test_rejects_an_invalid_original_url(self):
         serializer = ShortenedURLSerializer(data={'original_url': 'not a URL'})

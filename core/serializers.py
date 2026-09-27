@@ -1,9 +1,18 @@
 import secrets
 import string
 
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from .models import ShortenedURL
+
+CODE_LENGTH = 8
+MAX_CODE_GENERATION_ATTEMPTS = 5
+
+
+def generate_shortened_code():
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(CODE_LENGTH))
 
 
 class ShortenedURLSerializer(serializers.ModelSerializer):
@@ -28,13 +37,22 @@ class ShortenedURLSerializer(serializers.ModelSerializer):
         )
 
     def create(self, validated_data):
-        alphabet = string.ascii_letters + string.digits
-        while True:
-            code = ''.join(secrets.choice(alphabet) for _ in range(8))
-            if not ShortenedURL.objects.filter(shortened_code=code).exists():
-                break
+        for _ in range(MAX_CODE_GENERATION_ATTEMPTS):
+            code = generate_shortened_code()
+            if ShortenedURL.objects.filter(shortened_code=code).exists():
+                continue
 
-        return ShortenedURL.objects.create(
-            shortened_code=code,
-            **validated_data,
-        )
+            try:
+                with transaction.atomic():
+                    return ShortenedURL.objects.create(
+                        shortened_code=code,
+                        **validated_data,
+                    )
+            except IntegrityError:
+                if ShortenedURL.objects.filter(shortened_code=code).exists():
+                    continue
+                raise
+
+        raise serializers.ValidationError({
+            'shortened_code': 'Could not generate a unique code. Please try again.'
+        })
