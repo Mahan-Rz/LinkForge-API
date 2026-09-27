@@ -9,8 +9,23 @@ from .models import ShortenedURL
 class ShortenedURLSerializer(serializers.ModelSerializer):
     class Meta:
         model = ShortenedURL
-        fields = ('id', 'original_url', 'shortened_code', 'created_at')
-        read_only_fields = ('id', 'shortened_code', 'created_at')
+        fields = (
+            'id',
+            'owner',
+            'original_url',
+            'shortened_code',
+            'created_at',
+            'click_count',
+            'last_clicked_at',
+        )
+        read_only_fields = (
+            'id',
+            'owner',
+            'shortened_code',
+            'created_at',
+            'click_count',
+            'last_clicked_at',
+        )
 
     def create(self, validated_data):
         alphabet = string.ascii_letters + string.digits
