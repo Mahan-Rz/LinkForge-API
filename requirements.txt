@@ -1,0 +1,4 @@
+Django==6.0.5
+djangorestframework==3.17.1
+python-decouple==3.8
+redis==8.0.1

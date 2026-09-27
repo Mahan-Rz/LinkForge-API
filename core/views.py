@@ -1,7 +1,9 @@
+from django.http import HttpResponseRedirect
 from rest_framework import generics
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.permissions import IsAuthenticated
 
+from .services import get_redirect_target, invalidate_redirect_cache
 from .models import ShortenedURL
 from .serializers import ShortenedURLSerializer
 
@@ -29,3 +31,16 @@ class ShortenedURLDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return self.queryset.filter(owner=self.request.user)
+
+    def perform_update(self, serializer):
+        shortened_code = serializer.instance.shortened_code
+        serializer.save()
+        invalidate_redirect_cache(shortened_code)
+
+    def perform_destroy(self, instance):
+        invalidate_redirect_cache(instance.shortened_code)
+        instance.delete()
+
+
+def redirect_shortened_url(request, shortened_code):
+    return HttpResponseRedirect(get_redirect_target(shortened_code))

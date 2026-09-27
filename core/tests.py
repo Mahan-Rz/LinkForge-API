@@ -1,15 +1,29 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.cache import cache
+from django.test import TestCase, override_settings
 from django.urls import reverse
+from redis.exceptions import RedisError
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
+from . import services
 from .models import ShortenedURL
 from .serializers import ShortenedURLSerializer
 
 
+@override_settings(
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'linkforge-redirect-tests',
+        }
+    }
+)
 class ShortenedURLAPITests(APITestCase):
     def setUp(self):
+        cache.clear()
         self.list_url = reverse('url-list-create')
         user_model = get_user_model()
         self.user = user_model.objects.create_user(
@@ -175,6 +189,113 @@ class ShortenedURLAPITests(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_redirect_increments_click_analytics(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/destination',
+            shortened_code='redirect1',
+            owner=self.user,
+        )
+
+        response = APIClient().get(reverse('url-redirect', args=['redirect1']))
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(response['Location'], shortened_url.original_url)
+        shortened_url.refresh_from_db()
+        self.assertEqual(shortened_url.click_count, 1)
+        self.assertIsNotNone(shortened_url.last_clicked_at)
+
+    def test_redirect_for_unknown_code_returns_404(self):
+        response = APIClient().get(reverse('url-redirect', args=['unknown1']))
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_redirect_uses_cached_target_after_first_lookup(self):
+        ShortenedURL.objects.create(
+            original_url='https://example.com/destination',
+            shortened_code='cached01',
+            owner=self.user,
+        )
+        with patch.object(
+            services,
+            '_lookup_redirect_target',
+            wraps=services._lookup_redirect_target,
+        ) as lookup_target:
+            first_response = APIClient().get(
+                reverse('url-redirect', args=['cached01'])
+            )
+            second_response = APIClient().get(
+                reverse('url-redirect', args=['cached01'])
+            )
+
+        self.assertEqual(first_response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(second_response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(lookup_target.call_count, 1)
+        self.assertEqual(
+            ShortenedURL.objects.get(shortened_code='cached01').click_count,
+            2,
+        )
+
+    def test_url_update_invalidates_cached_redirect_target(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/old',
+            shortened_code='update01',
+            owner=self.user,
+        )
+        redirect_url = reverse('url-redirect', args=['update01'])
+        APIClient().get(redirect_url)
+
+        update_response = self.client.put(
+            reverse('url-detail', args=[shortened_url.id]),
+            {'original_url': 'https://example.com/new'},
+            format='json',
+        )
+        redirect_response = APIClient().get(redirect_url)
+
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(redirect_response['Location'], 'https://example.com/new')
+
+    def test_url_delete_invalidates_cached_redirect_target(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/destination',
+            shortened_code='delete01',
+            owner=self.user,
+        )
+        redirect_url = reverse('url-redirect', args=['delete01'])
+        APIClient().get(redirect_url)
+
+        delete_response = self.client.delete(
+            reverse('url-detail', args=[shortened_url.id])
+        )
+        with patch.object(
+            services,
+            '_lookup_redirect_target',
+            wraps=services._lookup_redirect_target,
+        ) as lookup_target:
+            redirect_response = APIClient().get(redirect_url)
+
+        self.assertEqual(delete_response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(redirect_response.status_code, status.HTTP_404_NOT_FOUND)
+        lookup_target.assert_called_once_with('delete01')
+
+    def test_redis_failure_falls_back_to_database(self):
+        ShortenedURL.objects.create(
+            original_url='https://example.com/fallback',
+            shortened_code='fallback',
+            owner=self.user,
+        )
+
+        with self.assertLogs('core.services', level='ERROR'):
+            with (
+                patch('core.services.cache.get', side_effect=RedisError),
+                patch('core.services.cache.set', side_effect=RedisError),
+            ):
+                response = APIClient().get(
+                    reverse('url-redirect', args=['fallback'])
+                )
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(response['Location'], 'https://example.com/fallback')
 
 
 class ShortenedURLSerializerTests(TestCase):
