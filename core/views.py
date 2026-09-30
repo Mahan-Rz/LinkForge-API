@@ -1,4 +1,4 @@
-from django.http import HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseRedirect
 from rest_framework import generics
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -56,4 +56,7 @@ class ShortenedURLDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 def redirect_shortened_url(request, shortened_code):
-    return HttpResponseRedirect(get_redirect_target(shortened_code))
+    original_url = get_redirect_target(shortened_code)
+    if original_url is None:
+        return HttpResponse(status=410)
+    return HttpResponseRedirect(original_url)

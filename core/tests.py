@@ -13,7 +13,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.test import APIClient, APITestCase
 
 from . import services
-from .models import ShortenedURL
+from .models import ClickEvent, ShortenedURL
 from .serializers import MAX_CODE_GENERATION_ATTEMPTS, ShortenedURLSerializer
 
 
@@ -323,6 +323,56 @@ class ShortenedURLAPITests(APITestCase):
         shortened_url.refresh_from_db()
         self.assertEqual(shortened_url.click_count, 1)
         self.assertIsNotNone(shortened_url.last_clicked_at)
+        self.assertEqual(
+            ClickEvent.objects.filter(shortened_url=shortened_url).count(),
+            1,
+        )
+
+    def test_redirect_of_active_unexpired_url_succeeds(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/active',
+            shortened_code='active01',
+            owner=self.user,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+        response = APIClient().get(reverse('url-redirect', args=['active01']))
+
+        self.assertEqual(response.status_code, status.HTTP_302_FOUND)
+        self.assertEqual(response['Location'], shortened_url.original_url)
+        self.assertEqual(ClickEvent.objects.filter(shortened_url=shortened_url).count(), 1)
+
+    def test_inactive_url_returns_gone_without_recording_click(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/inactive',
+            shortened_code='inactive',
+            owner=self.user,
+            is_active=False,
+        )
+
+        response = APIClient().get(reverse('url-redirect', args=['inactive']))
+
+        self.assertEqual(response.status_code, status.HTTP_410_GONE)
+        shortened_url.refresh_from_db()
+        self.assertEqual(shortened_url.click_count, 0)
+        self.assertIsNone(shortened_url.last_clicked_at)
+        self.assertFalse(ClickEvent.objects.filter(shortened_url=shortened_url).exists())
+
+    def test_expired_url_returns_gone_without_recording_click(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/expired',
+            shortened_code='expired1',
+            owner=self.user,
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+
+        response = APIClient().get(reverse('url-redirect', args=['expired1']))
+
+        self.assertEqual(response.status_code, status.HTTP_410_GONE)
+        shortened_url.refresh_from_db()
+        self.assertEqual(shortened_url.click_count, 0)
+        self.assertIsNone(shortened_url.last_clicked_at)
+        self.assertFalse(ClickEvent.objects.filter(shortened_url=shortened_url).exists())
 
     def test_redirect_for_unknown_code_returns_404(self):
         response = APIClient().get(reverse('url-redirect', args=['unknown1']))
@@ -353,6 +403,67 @@ class ShortenedURLAPITests(APITestCase):
         self.assertEqual(
             ShortenedURL.objects.get(shortened_code='cached01').click_count,
             2,
+        )
+        self.assertEqual(
+            ClickEvent.objects.filter(
+                shortened_url__shortened_code='cached01'
+            ).count(),
+            2,
+        )
+
+    def test_cached_lookup_does_not_bypass_deactivation(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/deactivate',
+            shortened_code='deactiv1',
+            owner=self.user,
+        )
+        redirect_url = reverse('url-redirect', args=['deactiv1'])
+        self.assertEqual(APIClient().get(redirect_url).status_code, status.HTTP_302_FOUND)
+        ShortenedURL.objects.filter(pk=shortened_url.pk).update(is_active=False)
+
+        response = APIClient().get(redirect_url)
+
+        self.assertEqual(response.status_code, status.HTTP_410_GONE)
+        shortened_url.refresh_from_db()
+        self.assertEqual(shortened_url.click_count, 1)
+        self.assertEqual(ClickEvent.objects.filter(shortened_url=shortened_url).count(), 1)
+
+    def test_cached_lookup_does_not_bypass_new_expiration(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/expire',
+            shortened_code='expire01',
+            owner=self.user,
+        )
+        redirect_url = reverse('url-redirect', args=['expire01'])
+        self.assertEqual(APIClient().get(redirect_url).status_code, status.HTTP_302_FOUND)
+        ShortenedURL.objects.filter(pk=shortened_url.pk).update(
+            expires_at=timezone.now() - timedelta(seconds=1)
+        )
+
+        response = APIClient().get(redirect_url)
+
+        self.assertEqual(response.status_code, status.HTTP_410_GONE)
+        shortened_url.refresh_from_db()
+        self.assertEqual(shortened_url.click_count, 1)
+        self.assertEqual(ClickEvent.objects.filter(shortened_url=shortened_url).count(), 1)
+
+    def test_cached_id_uses_current_destination_from_database(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/old-destination',
+            shortened_code='dest0001',
+            owner=self.user,
+        )
+        redirect_url = reverse('url-redirect', args=['dest0001'])
+        APIClient().get(redirect_url)
+        ShortenedURL.objects.filter(pk=shortened_url.pk).update(
+            original_url='https://example.com/current-destination'
+        )
+
+        response = APIClient().get(redirect_url)
+
+        self.assertEqual(
+            response['Location'],
+            'https://example.com/current-destination',
         )
 
     def test_url_update_invalidates_cached_redirect_target(self):

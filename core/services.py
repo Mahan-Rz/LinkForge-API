@@ -1,12 +1,13 @@
 import logging
 
 from django.core.cache import cache
-from django.db.models import F
+from django.db import transaction
+from django.db.models import F, Q
 from django.http import Http404
 from django.utils import timezone
 from redis.exceptions import RedisError
 
-from .models import ShortenedURL
+from .models import ClickEvent, ShortenedURL
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ def _cache_key(shortened_code):
 
 def _lookup_redirect_target(shortened_code):
     try:
-        return ShortenedURL.objects.values('id', 'original_url').get(
+        return ShortenedURL.objects.values('id').get(
             shortened_code=shortened_code
         )
     except ShortenedURL.DoesNotExist as exc:
@@ -48,30 +49,51 @@ def get_redirect_target(shortened_code):
         cached_target = None
 
     if (
-        isinstance(cached_target, tuple)
-        and len(cached_target) == 2
-        and isinstance(cached_target[0], int)
-        and isinstance(cached_target[1], str)
+        isinstance(cached_target, int)
     ):
-        url_id, original_url = cached_target
+        url_id = cached_target
     else:
         target = _lookup_redirect_target(shortened_code)
         url_id = target['id']
-        original_url = target['original_url']
         try:
-            cache.set(key, (url_id, original_url), timeout=CACHE_TIMEOUT)
+            cache.set(key, url_id, timeout=CACHE_TIMEOUT)
         except RedisError:
             logger.exception(
                 'Redis cache population failed for shortened code %s.',
                 shortened_code,
             )
 
-    updated = ShortenedURL.objects.filter(pk=url_id).update(
-        click_count=F('click_count') + 1,
-        last_clicked_at=timezone.now(),
-    )
-    if not updated:
-        invalidate_redirect_cache(shortened_code)
-        raise Http404('Shortened URL not found.')
+    with transaction.atomic():
+        try:
+            shortened_url = ShortenedURL.objects.select_for_update().get(
+                pk=url_id,
+                shortened_code=shortened_code,
+            )
+        except ShortenedURL.DoesNotExist as exc:
+            invalidate_redirect_cache(shortened_code)
+            raise Http404('Shortened URL not found.') from exc
 
-    return original_url
+        now = timezone.now()
+        if not shortened_url.is_active or (
+            shortened_url.expires_at is not None
+            and shortened_url.expires_at <= now
+        ):
+            invalidate_redirect_cache(shortened_code)
+            return None
+
+        updated = ShortenedURL.objects.filter(
+            pk=shortened_url.pk,
+            is_active=True,
+        ).filter(
+            Q(expires_at__isnull=True) | Q(expires_at__gt=now)
+        ).update(
+            click_count=F('click_count') + 1,
+            last_clicked_at=now,
+        )
+        if not updated:
+            invalidate_redirect_cache(shortened_code)
+            return None
+
+        ClickEvent.objects.create(shortened_url=shortened_url)
+
+    return shortened_url.original_url
