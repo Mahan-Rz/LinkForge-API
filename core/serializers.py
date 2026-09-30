@@ -2,6 +2,7 @@ import secrets
 import string
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework import serializers
 
 from .models import ShortenedURL
@@ -24,6 +25,8 @@ class ShortenedURLSerializer(serializers.ModelSerializer):
             'original_url',
             'shortened_code',
             'created_at',
+            'expires_at',
+            'is_active',
             'click_count',
             'last_clicked_at',
         )
@@ -35,6 +38,13 @@ class ShortenedURLSerializer(serializers.ModelSerializer):
             'click_count',
             'last_clicked_at',
         )
+
+    def validate_expires_at(self, value):
+        if value is not None and value <= timezone.now():
+            raise serializers.ValidationError(
+                'Expiration must be a future date and time.'
+            )
+        return value
 
     def create(self, validated_data):
         for _ in range(MAX_CODE_GENERATION_ATTEMPTS):

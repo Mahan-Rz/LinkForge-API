@@ -1,11 +1,19 @@
 from django.http import HttpResponseRedirect
 from rest_framework import generics
 from rest_framework.authentication import TokenAuthentication
+from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 
 from .services import get_redirect_target, invalidate_redirect_cache
 from .models import ShortenedURL
 from .serializers import ShortenedURLSerializer
+
+
+class ShortenedURLPagination(PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 100
 
 
 class ShortenedURLListCreateView(generics.ListCreateAPIView):
@@ -13,6 +21,11 @@ class ShortenedURLListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     queryset = ShortenedURL.objects.all()
     serializer_class = ShortenedURLSerializer
+    pagination_class = ShortenedURLPagination
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ['original_url']
+    ordering_fields = ['created_at', 'click_count']
+    ordering = ['-created_at']
     http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):

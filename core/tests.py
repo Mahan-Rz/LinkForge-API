@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -5,6 +6,7 @@ from django.core.cache import cache
 from django.db import IntegrityError
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from redis.exceptions import RedisError
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -104,8 +106,111 @@ class ShortenedURLAPITests(APITestCase):
         response = self.client.get(self.list_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['id'], own_url.id)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(len(response.data['results']), 1)
+        self.assertEqual(response.data['results'][0]['id'], own_url.id)
+
+    def test_list_urls_supports_pagination(self):
+        for index in range(12):
+            ShortenedURL.objects.create(
+                original_url=f'https://example.com/path/{index}',
+                shortened_code=f'page{index:04d}',
+                owner=self.user,
+            )
+
+        response = self.client.get(self.list_url)
+        second_page = self.client.get(self.list_url, {'page': 2})
+        small_page = self.client.get(self.list_url, {'page_size': 3})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 12)
+        self.assertEqual(len(response.data['results']), 10)
+        self.assertIsNotNone(response.data['next'])
+        self.assertEqual(len(second_page.data['results']), 2)
+        self.assertEqual(len(small_page.data['results']), 3)
+
+    def test_list_urls_can_search_original_url(self):
+        matching_url = ShortenedURL.objects.create(
+            original_url='https://example.com/search-term',
+            shortened_code='search01',
+            owner=self.user,
+        )
+        ShortenedURL.objects.create(
+            original_url='https://example.org/other',
+            shortened_code='search02',
+            owner=self.user,
+        )
+
+        response = self.client.get(self.list_url, {'search': 'search-term'})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        self.assertEqual(response.data['results'][0]['id'], matching_url.id)
+
+    def test_list_urls_can_order_by_click_count(self):
+        lower_click_url = ShortenedURL.objects.create(
+            original_url='https://example.com/fewer-clicks',
+            shortened_code='order001',
+            owner=self.user,
+            click_count=1,
+        )
+        higher_click_url = ShortenedURL.objects.create(
+            original_url='https://example.com/more-clicks',
+            shortened_code='order002',
+            owner=self.user,
+            click_count=5,
+        )
+
+        response = self.client.get(self.list_url, {'ordering': '-click_count'})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item['id'] for item in response.data['results']],
+            [higher_click_url.id, lower_click_url.id],
+        )
+
+    def test_list_ordering_rejects_unapproved_fields(self):
+        first_url = ShortenedURL.objects.create(
+            original_url='https://example.com/first',
+            shortened_code='allow001',
+            owner=self.user,
+        )
+        second_url = ShortenedURL.objects.create(
+            original_url='https://example.com/second',
+            shortened_code='allow002',
+            owner=self.user,
+        )
+
+        response = self.client.get(self.list_url, {'ordering': 'owner'})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item['id'] for item in response.data['results']],
+            [second_url.id, first_url.id],
+        )
+
+    def test_list_urls_can_order_by_created_at(self):
+        older_url = ShortenedURL.objects.create(
+            original_url='https://example.com/older',
+            shortened_code='time0001',
+            owner=self.user,
+        )
+        newer_url = ShortenedURL.objects.create(
+            original_url='https://example.com/newer',
+            shortened_code='time0002',
+            owner=self.user,
+        )
+        ShortenedURL.objects.filter(pk=older_url.pk).update(
+            created_at=timezone.now() - timedelta(days=1)
+        )
+
+        response = self.client.get(self.list_url, {'ordering': 'created_at'})
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [item['id'] for item in response.data['results']],
+            [older_url.id, newer_url.id],
+        )
 
     def test_retrieve_url(self):
         shortened_url = ShortenedURL.objects.create(
@@ -313,6 +418,25 @@ class ShortenedURLAPITests(APITestCase):
 
 
 class ShortenedURLSerializerTests(TestCase):
+    def test_accepts_future_expiration(self):
+        serializer = ShortenedURLSerializer(data={
+            'original_url': 'https://example.com/path',
+            'expires_at': '2099-01-01T00:00:00Z',
+            'is_active': False,
+        })
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertFalse(serializer.validated_data['is_active'])
+
+    def test_rejects_past_expiration(self):
+        serializer = ShortenedURLSerializer(data={
+            'original_url': 'https://example.com/path',
+            'expires_at': '2000-01-01T00:00:00Z',
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn('expires_at', serializer.errors)
+
     def test_create_generates_a_unique_shortened_code(self):
         user = get_user_model().objects.create_user(
             username='serializer-owner',
