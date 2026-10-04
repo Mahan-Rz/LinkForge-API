@@ -3,8 +3,9 @@
 ## Local development with Docker Compose
 
 1. Install Docker Desktop and start its Linux container engine.
-2. Keep the existing `.env` file and add the PostgreSQL values shown in
-   `.env.example`. Choose a private local `POSTGRES_PASSWORD`; do not commit
+2. If you do not already have a local `.env`, copy `.env.example` to `.env`.
+   Otherwise, add any missing settings from `.env.example` without replacing
+   existing secrets. Choose a private local `POSTGRES_PASSWORD`; do not commit
    `.env`.
 3. Start PostgreSQL, Redis, the Django API, the Celery worker, and Celery Beat:
 
@@ -57,3 +58,10 @@ docker compose exec web python manage.py loaddata sqlite-data.json
 API tokens are deliberately excluded; users can obtain new tokens after
 transfer. Keep the SQLite file and a copy of the fixture as backups until the
 PostgreSQL data has been checked.
+
+## Continuous integration
+
+GitHub Actions runs Django checks and the full test suite against temporary
+PostgreSQL and Redis services on pushes and pull requests. It also validates
+the OpenAPI document and builds the Docker image. CI uses disposable credentials
+defined in the workflow; it does not deploy the application.
