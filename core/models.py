@@ -16,6 +16,18 @@ class ShortenedURL(models.Model):
     expires_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=['owner', 'created_at'],
+                name='idx_url_owner_created',
+            ),
+            models.Index(
+                fields=['owner', 'click_count'],
+                name='idx_url_owner_clicks',
+            ),
+        ]
+
 
 class ClickEvent(models.Model):
     shortened_url = models.ForeignKey(

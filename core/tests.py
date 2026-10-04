@@ -129,6 +129,20 @@ class ShortenedURLAPITests(APITestCase):
         self.assertEqual(len(second_page.data['results']), 2)
         self.assertEqual(len(small_page.data['results']), 3)
 
+    def test_list_serialization_does_not_add_per_url_queries(self):
+        for index in range(5):
+            ShortenedURL.objects.create(
+                original_url=f'https://example.com/query-count/{index}',
+                shortened_code=f'query{index:03d}',
+                owner=self.user,
+            )
+
+        with self.assertNumQueries(2):
+            response = self.client.get(self.list_url)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['results']), 5)
+
     def test_list_urls_can_search_original_url(self):
         matching_url = ShortenedURL.objects.create(
             original_url='https://example.com/search-term',
