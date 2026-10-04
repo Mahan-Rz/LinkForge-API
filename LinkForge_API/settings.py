@@ -76,17 +76,40 @@ WSGI_APPLICATION = 'LinkForge_API.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+DATABASE_ENGINE = config(
+    'DATABASE_ENGINE',
+    default='django.db.backends.postgresql',
+)
+
+if DATABASE_ENGINE == 'django.db.backends.sqlite3':
+    DATABASES = {
+        'default': {
+            'ENGINE': DATABASE_ENGINE,
+            'NAME': config(
+                'SQLITE_NAME',
+                default=str(BASE_DIR / 'db.sqlite3'),
+            ),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': DATABASE_ENGINE,
+            'NAME': config('POSTGRES_DB', default='linkforge'),
+            'USER': config('POSTGRES_USER', default='linkforge'),
+            'PASSWORD': config('POSTGRES_PASSWORD', default=''),
+            'HOST': config('DB_HOST', default='127.0.0.1'),
+            'PORT': config('DB_PORT', default='5432'),
+        }
+    }
 
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://127.0.0.1:6379/1'),
+        'LOCATION': config(
+            'REDIS_URL',
+            default='redis://127.0.0.1:6379/1',
+        ),
         'TIMEOUT': 300,
     },
 }

@@ -5,6 +5,9 @@ venv/
 db.sqlite3
 *.sqlite3
 *.sqlite3-*
+*.dump
+*.sql
+sqlite-data*.json
 __pycache__/
 *.pyc
 .vscode/
