@@ -41,8 +41,23 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
     'rest_framework.authtoken',
+    'drf_spectacular',
     'core',
 ]
+
+REST_FRAMEWORK = {
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'LinkForge API',
+    'DESCRIPTION': (
+        'Create and manage shortened URLs, inspect click summaries, and '
+        'redirect through active, unexpired links.'
+    ),
+    'VERSION': '4.0.0',
+    'COMPONENT_SPLIT_REQUEST': True,
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

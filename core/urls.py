@@ -1,10 +1,17 @@
 from django.urls import path
-from rest_framework.authtoken.views import obtain_auth_token
 
-from .views import ShortenedURLDetailView, ShortenedURLListCreateView
+from .views import (
+    DocumentedObtainAuthToken,
+    ShortenedURLDetailView,
+    ShortenedURLListCreateView,
+)
 
 urlpatterns = [
-    path('auth/token/', obtain_auth_token, name='api-token-auth'),
+    path(
+        'auth/token/',
+        DocumentedObtainAuthToken.as_view(),
+        name='api-token-auth',
+    ),
     path('urls/', ShortenedURLListCreateView.as_view(), name='url-list-create'),
     path('urls/<int:pk>/', ShortenedURLDetailView.as_view(), name='url-detail'),
 ]

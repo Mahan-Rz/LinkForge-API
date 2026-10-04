@@ -92,6 +92,39 @@ class ShortenedURLAPITests(APITestCase):
 
         self.assertEqual(authenticated_response.status_code, status.HTTP_200_OK)
 
+    def test_api_schema_documents_routes_filters_and_redirect_statuses(self):
+        anonymous_client = APIClient()
+        response = anonymous_client.get(
+            reverse('schema'),
+            HTTP_ACCEPT='application/json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('/api/auth/token/', response.data['paths'])
+        self.assertIn('/api/urls/', response.data['paths'])
+        self.assertIn('/api/urls/{id}/', response.data['paths'])
+        self.assertIn('/{shortened_code}/', response.data['paths'])
+        token_operation = response.data['paths']['/api/auth/token/']['post']
+        self.assertNotIn('security', token_operation)
+        self.assertIn(
+            {'tokenAuth': []},
+            response.data['paths']['/api/urls/']['get']['security'],
+        )
+        list_parameters = response.data['paths']['/api/urls/']['get']['parameters']
+        parameter_names = {parameter['name'] for parameter in list_parameters}
+        self.assertTrue({'page', 'page_size', 'search', 'ordering'} <= parameter_names)
+        redirect_responses = response.data['paths']['/{shortened_code}/']['get']['responses']
+        self.assertTrue({'302', '404', '410'} <= set(redirect_responses))
+        self.assertEqual(
+            response.data['paths']['/{shortened_code}/']['get']['security'],
+            [{}],
+        )
+
+    def test_swagger_documentation_page_is_available_without_authentication(self):
+        response = APIClient().get(reverse('swagger-ui'))
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
     def test_list_urls(self):
         own_url = ShortenedURL.objects.create(
             original_url='https://example.com/path',

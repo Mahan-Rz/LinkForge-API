@@ -19,6 +19,9 @@
    ```
 
 5. Open the API at `http://localhost:8000`.
+6. Browse interactive API docs at `http://localhost:8000/api/docs/` or
+   `http://localhost:8000/api/redoc/`. The OpenAPI schema is at
+   `http://localhost:8000/api/schema/`.
 
 PostgreSQL persists in the `postgres_data` volume and Redis in `redis_data`.
 The existing `db.sqlite3` file is left untouched; changing Django's database
