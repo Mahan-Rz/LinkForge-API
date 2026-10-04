@@ -11,3 +11,4 @@ __pycache__
 *.dump
 *.sql
 sqlite-data*.json
+celerybeat-schedule*

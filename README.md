@@ -6,7 +6,7 @@
 2. Keep the existing `.env` file and add the PostgreSQL values shown in
    `.env.example`. Choose a private local `POSTGRES_PASSWORD`; do not commit
    `.env`.
-3. Start the database, Redis, and Django API:
+3. Start PostgreSQL, Redis, the Django API, the Celery worker, and Celery Beat:
 
    ```powershell
    docker compose up --build -d
@@ -23,6 +23,11 @@
 PostgreSQL persists in the `postgres_data` volume and Redis in `redis_data`.
 The existing `db.sqlite3` file is left untouched; changing Django's database
 setting does not copy its data.
+
+Celery Beat schedules expired URL cleanup hourly. The worker deactivates
+expired links and invalidates their redirect cache entries; it does not delete
+URLs or their click history. Redis database 0 is the Celery broker and database
+1 remains the Django redirect cache.
 
 ## Optional SQLite data transfer
 

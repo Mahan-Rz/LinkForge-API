@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 from decouple import config
+from celery.schedules import crontab
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -111,6 +112,18 @@ CACHES = {
             default='redis://127.0.0.1:6379/1',
         ),
         'TIMEOUT': 300,
+    },
+}
+
+CELERY_BROKER_URL = config(
+    'CELERY_BROKER_URL',
+    default='redis://127.0.0.1:6379/0',
+)
+CELERY_TASK_DEFAULT_QUEUE = 'linkforge'
+CELERY_BEAT_SCHEDULE = {
+    'deactivate-expired-shortened-urls-hourly': {
+        'task': 'core.tasks.deactivate_expired_urls',
+        'schedule': crontab(minute=0),
     },
 }
 

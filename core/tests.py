@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.db import IntegrityError
+from django.db import IntegrityError, OperationalError
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -15,6 +15,7 @@ from rest_framework.test import APIClient, APITestCase
 from . import services
 from .models import ClickEvent, ShortenedURL
 from .serializers import MAX_CODE_GENERATION_ATTEMPTS, ShortenedURLSerializer
+from .tasks import deactivate_expired_urls
 
 
 @override_settings(
@@ -540,6 +541,133 @@ class ShortenedURLAPITests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_302_FOUND)
         self.assertEqual(response['Location'], 'https://example.com/fallback')
+
+
+@override_settings(
+    CACHES={
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'linkforge-expiry-task-tests',
+        }
+    }
+)
+class ExpiredURLCleanupTaskTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(
+            username='cleanup-owner',
+            password='test-password',
+        )
+
+    def test_deactivates_only_expired_active_urls_and_invalidates_cache(self):
+        expired_url = ShortenedURL.objects.create(
+            original_url='https://example.com/expired-task',
+            shortened_code='taskexp1',
+            owner=self.user,
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        future_url = ShortenedURL.objects.create(
+            original_url='https://example.com/future-task',
+            shortened_code='taskfut1',
+            owner=self.user,
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        no_expiry_url = ShortenedURL.objects.create(
+            original_url='https://example.com/no-expiry-task',
+            shortened_code='tasknon1',
+            owner=self.user,
+        )
+        inactive_url = ShortenedURL.objects.create(
+            original_url='https://example.com/already-inactive',
+            shortened_code='taskina1',
+            owner=self.user,
+            expires_at=timezone.now() - timedelta(seconds=1),
+            is_active=False,
+        )
+        for shortened_url in (
+            expired_url,
+            future_url,
+            no_expiry_url,
+            inactive_url,
+        ):
+            cache.set(
+                services._cache_key(shortened_url.shortened_code),
+                shortened_url.pk,
+            )
+
+        deactivated_count = deactivate_expired_urls.apply().get()
+
+        self.assertEqual(deactivated_count, 1)
+        expired_url.refresh_from_db()
+        future_url.refresh_from_db()
+        no_expiry_url.refresh_from_db()
+        inactive_url.refresh_from_db()
+        self.assertFalse(expired_url.is_active)
+        self.assertTrue(future_url.is_active)
+        self.assertTrue(no_expiry_url.is_active)
+        self.assertFalse(inactive_url.is_active)
+        self.assertIsNone(cache.get(services._cache_key('taskexp1')))
+        self.assertEqual(cache.get(services._cache_key('taskfut1')), future_url.pk)
+
+    def test_cleanup_is_idempotent(self):
+        ShortenedURL.objects.create(
+            original_url='https://example.com/expired-task',
+            shortened_code='idempot1',
+            owner=self.user,
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+
+        first_run = deactivate_expired_urls.apply().get()
+        second_run = deactivate_expired_urls.apply().get()
+
+        self.assertEqual(first_run, 1)
+        self.assertEqual(second_run, 0)
+
+    def test_retries_transient_database_operational_error(self):
+        ShortenedURL.objects.create(
+            original_url='https://example.com/retry-task',
+            shortened_code='retry001',
+            owner=self.user,
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        select_for_update = ShortenedURL.objects.select_for_update
+        query_attempts = 0
+
+        def select_for_update_with_retry():
+            nonlocal query_attempts
+            query_attempts += 1
+            if query_attempts == 1:
+                raise OperationalError('temporary database issue')
+            return select_for_update()
+
+        with patch(
+            'core.tasks.ShortenedURL.objects.select_for_update',
+            side_effect=select_for_update_with_retry,
+        ) as select_query:
+            deactivated_count = deactivate_expired_urls.apply().get()
+
+        self.assertEqual(deactivated_count, 1)
+        self.assertEqual(select_query.call_count, 2)
+        self.assertEqual(query_attempts, 2)
+        self.assertFalse(
+            ShortenedURL.objects.get(shortened_code='retry001').is_active
+        )
+
+    def test_redis_invalidation_failure_does_not_reactivate_url(self):
+        shortened_url = ShortenedURL.objects.create(
+            original_url='https://example.com/cache-failure-task',
+            shortened_code='cachef01',
+            owner=self.user,
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+
+        with self.assertLogs('core.services', level='ERROR'):
+            with patch('core.services.cache.delete', side_effect=RedisError):
+                deactivated_count = deactivate_expired_urls.apply().get()
+
+        shortened_url.refresh_from_db()
+        self.assertEqual(deactivated_count, 1)
+        self.assertFalse(shortened_url.is_active)
 
 
 class ShortenedURLSerializerTests(TestCase):

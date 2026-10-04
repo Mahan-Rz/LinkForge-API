@@ -8,6 +8,7 @@ db.sqlite3
 *.dump
 *.sql
 sqlite-data*.json
+celerybeat-schedule*
 __pycache__/
 *.pyc
 .vscode/
